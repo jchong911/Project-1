@@ -100,6 +100,9 @@ export const saveBudgetSplit = (
 export const savePaycheck = (userId: string, paycheck: Paycheck) =>
   setDoc(recordDocument(userId, 'paychecks', paycheck.id), paycheck)
 
+export const removePaycheck = (userId: string, paycheckId: string) =>
+  deleteDoc(recordDocument(userId, 'paychecks', paycheckId))
+
 export const saveExpense = (userId: string, expense: Expense) =>
   setDoc(recordDocument(userId, 'expenses', expense.id), expense)
 

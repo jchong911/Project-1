@@ -42,11 +42,13 @@ import {
   type BudgetData,
   type Expense,
   type Goal,
+  type Paycheck,
   type Subscription,
 } from './budget'
 import {
   deleteAllBudgetData,
   removeExpense,
+  removePaycheck,
   removeSubscription,
   saveBudgetSplit,
   saveExpense,
@@ -135,6 +137,9 @@ function App() {
   const stats = calculateMonthlyStats(data, monthKey)
   const monthExpenses = data.expenses
     .filter((expense) => expense.date.startsWith(monthKey))
+    .sort((first, second) => second.date.localeCompare(first.date))
+  const monthPaychecks = data.paychecks
+    .filter((paycheck) => paycheck.date.startsWith(monthKey))
     .sort((first, second) => second.date.localeCompare(first.date))
   const monthGoals = data.goals.map((goal) => ({
     ...goal,
@@ -301,6 +306,11 @@ function App() {
     }
 
     closeDialog()
+  }
+
+  const deletePaycheck = (paycheckId: string) => {
+    setData({ ...data, paychecks: data.paychecks.filter((paycheck) => paycheck.id !== paycheckId) })
+    commitCloud(removePaycheck(user.uid, paycheckId))
   }
 
   const deleteExpense = (expenseId: string) => {
@@ -494,8 +504,15 @@ function App() {
 
         {view === 'activity' && (
           <section className="page-section">
-            <div className="section-heading"><div><p className="section-kicker">{formatMonthLabel(monthKey).toUpperCase()}</p><h2>Spending activity</h2></div><span className="count-label">{monthExpenses.length} {monthExpenses.length === 1 ? 'entry' : 'entries'}</span></div>
-            <ActivityList expenses={monthExpenses} onEdit={openExpense} onDelete={deleteExpense} />
+            <div className="section-heading"><div><p className="section-kicker">{formatMonthLabel(monthKey).toUpperCase()}</p><h2>Money activity</h2></div><span className="count-label">{monthPaychecks.length + monthExpenses.length} entries</span></div>
+            <div className="activity-section">
+              <div className="activity-section-heading"><h3>Income</h3><span>{monthPaychecks.length} recorded</span></div>
+              <IncomeList paychecks={monthPaychecks} onDelete={deletePaycheck} />
+            </div>
+            <div className="activity-section">
+              <div className="activity-section-heading"><h3>Spending</h3><span>{monthExpenses.length} recorded</span></div>
+              <ActivityList expenses={monthExpenses} onEdit={openExpense} onDelete={deleteExpense} />
+            </div>
           </section>
         )}
 
@@ -642,6 +659,21 @@ function BucketPanel({ bucket, allocation, used, percentage }: { bucket: Bucket;
 
 function ActivityPanel({ expenses, onViewAll, onEdit, onDelete }: { expenses: Expense[]; onViewAll: () => void; onEdit: (expense: Expense) => void; onDelete: (id: string) => void }) {
   return <section className="list-panel"><div className="section-heading compact-heading"><div><p className="section-kicker">RECENT ENTRIES</p><h2>Where it went</h2></div><button className="text-button" onClick={onViewAll}>View all <ArrowRight size={15} /></button></div><ActivityList expenses={expenses} onEdit={onEdit} onDelete={onDelete} /></section>
+}
+
+function IncomeList({ paychecks, onDelete }: { paychecks: Paycheck[]; onDelete: (id: string) => void }) {
+  if (paychecks.length === 0) return <div className="empty-state"><span><Banknote size={20} /></span><strong>No income recorded for this month</strong><p>Add an income entry to see it here.</p></div>
+  return <div className="activity-list">{paychecks.map((paycheck) => (
+    <div className="activity-row income-row" key={paycheck.id}>
+      <div className="activity-main">
+        <span className="activity-icon income"><ArrowDownLeft size={17} /></span>
+        <span className="activity-copy"><strong>Bank income</strong><small>{paycheck.sourceNote || 'Imported or entered manually'} <i /> {formatShortDate(paycheck.date)}</small></span>
+      </div>
+      <span className="activity-bucket">Income</span>
+      <strong className="activity-amount">+{formatCurrency(paycheck.amount)}</strong>
+      <button className="row-delete" aria-label={`Delete income from ${formatShortDate(paycheck.date)}`} title="Delete income" onClick={() => onDelete(paycheck.id)}><Trash2 size={15} /></button>
+    </div>
+  ))}</div>
 }
 
 function ActivityList({ expenses, onEdit, onDelete }: { expenses: Expense[]; onEdit: (expense: Expense) => void; onDelete: (id: string) => void }) {
