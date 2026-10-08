@@ -51,9 +51,13 @@ export const subscribeToBudget = (
     onSnapshot(doc(requireFirestore(), 'users', userId, 'settings', 'budget'), (snapshot) => {
       const settings = snapshot.data()
       const percentages = settings?.percentages
+      const buckets = Array.isArray(settings?.buckets) && settings.buckets.length > 0
+        ? settings.buckets
+        : data.buckets
       const savingsAmount = typeof settings?.savingsAmount === 'number' ? settings.savingsAmount : null
       data = {
         ...data,
+        buckets,
         percentages: percentages && typeof percentages === 'object'
           ? { ...data.percentages, ...percentages }
           : data.percentages,
@@ -90,10 +94,11 @@ export const subscribeToBudget = (
 
 export const saveBudgetSplit = (
   userId: string,
-  percentages: BudgetData['percentages'],
+  buckets: BudgetData['buckets'],
   savingsAmount: number | null = null,
 ) => setDoc(doc(requireFirestore(), 'users', userId, 'settings', 'budget'), {
-  percentages,
+  buckets,
+  percentages: Object.fromEntries(buckets.map((bucket) => [bucket.id, bucket.percentage])),
   savingsAmount,
 })
 

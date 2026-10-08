@@ -12,7 +12,6 @@ import {
   Download,
   FileText,
   Goal as GoalIcon,
-  Home,
   LayoutDashboard,
   LoaderCircle,
   LogOut,
@@ -23,7 +22,6 @@ import {
   ShoppingBag,
   Sparkles,
   Trash2,
-  Utensils,
   Wallet,
   X,
 } from 'lucide-react'
@@ -39,6 +37,7 @@ import {
   readLegacyBudgetData,
   shiftMonthKey,
   type Bucket,
+  type BucketDefinition,
   type BudgetData,
   type Expense,
   type Goal,
@@ -65,12 +64,6 @@ type View = 'overview' | 'activity' | 'subscriptions' | 'goals' | 'settings'
 type Dialog = 'income' | 'expense' | 'subscription' | 'goal' | 'contribution' | 'split' | null
 type PayslipReview = PayslipSuggestions & { fileName: string }
 
-const bucketLabels: Record<Bucket, string> = {
-  needs: 'Needs',
-  wants: 'Wants',
-  savings: 'Savings',
-}
-
 const createId = () => globalThis.crypto.randomUUID()
 
 function App() {
@@ -88,6 +81,7 @@ function App() {
   const [targetGoalId, setTargetGoalId] = useState('')
   const [fixedSavings, setFixedSavings] = useState(false)
   const [splitError, setSplitError] = useState('')
+  const [draftBuckets, setDraftBuckets] = useState<BucketDefinition[]>([])
   const [payslipReview, setPayslipReview] = useState<PayslipReview | null>(null)
   const [isParsingPayslip, setIsParsingPayslip] = useState(false)
   const [payslipError, setPayslipError] = useState('')
@@ -117,7 +111,7 @@ function App() {
         ...legacyData.paychecks.map((paycheck) => savePaycheck(user.uid, paycheck)),
         ...legacyData.expenses.map((expense) => saveExpense(user.uid, expense)),
         ...legacyData.goals.map((goal) => saveGoal(user.uid, goal)),
-        saveBudgetSplit(user.uid, legacyData.percentages),
+        saveBudgetSplit(user.uid, legacyData.buckets),
       ])
       clearLegacyBudgetData()
       setLegacyData(null)
@@ -147,16 +141,34 @@ function App() {
       .filter((contribution) => contribution.date.startsWith(monthKey))
       .reduce((total, contribution) => total + contribution.amount, 0),
   }))
-  const totalAllocated = Object.values(data.percentages).reduce((total, value) => total + value, 0)
+  const totalAllocated = data.buckets.reduce((total, bucket) => total + bucket.percentage, 0)
+  const draftAllocated = draftBuckets.reduce((total, bucket) => total + bucket.percentage, 0)
 
   const openDialog = (kind: Exclude<Dialog, null>, goalId = '') => {
     setEditingExpense(null)
     setSplitError('')
     setFixedSavings(data.savingsAmount !== null)
+    setDraftBuckets(data.buckets.map((bucket) => ({ ...bucket })))
     setTargetGoalId(goalId || data.goals[0]?.id || '')
     setPayslipReview(null)
     setPayslipError('')
     setDialog(kind)
+  }
+
+  const updateDraftBucket = (bucketId: string, updates: Partial<BucketDefinition>) => {
+    setDraftBuckets((current) => current.map((bucket) => bucket.id === bucketId ? { ...bucket, ...updates } : bucket))
+  }
+
+  const addDraftBucket = () => {
+    const id = `custom-${createId()}`
+    setDraftBuckets((current) => [
+      ...current,
+      { id, name: 'New bucket', percentage: 0, color: '#7c8c80' },
+    ])
+  }
+
+  const removeDraftBucket = (bucketId: string) => {
+    setDraftBuckets((current) => current.filter((bucket) => bucket.id !== bucketId))
   }
 
   const openExpense = (expense: Expense) => {
@@ -204,13 +216,12 @@ function App() {
     const values = new FormData(event.currentTarget)
 
     if (dialog === 'split') {
-      const percentages: Record<Bucket, number> = {
-        needs: Number(values.get('needs')),
-        wants: Number(values.get('wants')),
-        savings: Number(values.get('savings')),
-      }
+      const buckets = draftBuckets.map((bucket) => ({
+        ...bucket,
+        percentage: Number(values.get(bucket.id)),
+      }))
       const savingsAmount = fixedSavings ? Number(values.get('savingsAmount')) : null
-      if (Object.values(percentages).some((value) => !Number.isFinite(value) || value < 0) || Object.values(percentages).reduce((total, value) => total + value, 0) !== 100) {
+      if (buckets.some((bucket) => !Number.isFinite(bucket.percentage) || bucket.percentage < 0) || buckets.reduce((total, bucket) => total + bucket.percentage, 0) !== 100) {
         setSplitError('Your percentages need to add up to 100%.')
         return
       }
@@ -218,8 +229,8 @@ function App() {
         setSplitError('Enter a valid monthly savings amount.')
         return
       }
-      setData({ ...data, percentages, savingsAmount })
-      commitCloud(saveBudgetSplit(user.uid, percentages, savingsAmount))
+      setData({ ...data, buckets, savingsAmount })
+      commitCloud(saveBudgetSplit(user.uid, buckets, savingsAmount))
       closeDialog()
       return
     }
@@ -405,17 +416,10 @@ function App() {
         </nav>
 
         <div className="sidebar-bottom">
-          <div className="privacy-card">
-            <span className="privacy-icon"><Wallet size={17} /></span>
-            <div>
-              <strong>Private cloud sync</strong>
-              <span>Your account, across devices.</span>
-            </div>
-          </div>
           <div className="profile-row">
             <div className="profile-avatar">{user.email?.slice(0, 1).toUpperCase() ?? 'U'}</div>
             <div className="profile-copy"><strong>{user.email ?? 'Personal account'}</strong><span>Signed in</span></div>
-            <button className="icon-button" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}><LogOut size={17} /></button>
+            <button className="icon-button logout-button" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}><LogOut size={17} /></button>
           </div>
         </div>
       </aside>
@@ -463,32 +467,31 @@ function App() {
 
             <section className="budget-section">
               <div className="section-heading">
-                <div><p className="section-kicker">THE 50 / 30 / 20 METHOD</p><h2>Your monthly plan</h2></div>
-                <button className="text-button" onClick={() => openDialog('split')}>Adjust split <Settings2 size={15} /></button>
+                <div><p className="section-kicker">YOUR MONEY, YOUR PLAN</p><h2>Monthly breakdown</h2></div>
+                <button className="text-button" onClick={() => openDialog('split')}>Customize buckets <Settings2 size={15} /></button>
               </div>
-              {totalAllocated !== 100 && <p className="inline-warning">Your split currently adds up to {totalAllocated}%. Adjust it to total 100%.</p>}
+              {totalAllocated !== 100 && <p className="inline-warning">Your buckets currently add up to {totalAllocated}%. Set them to 100% to complete your plan.</p>}
               <div className="budget-layout">
                 <div className="split-visual">
                   <div
                     className="split-ring"
                     role="img"
-                    aria-label={`Budget split: ${data.percentages.needs}% needs, ${data.percentages.wants}% wants, ${data.percentages.savings}% savings`}
-                    style={{ background: `conic-gradient(var(--mint) 0 ${data.percentages.needs}%, var(--sun) ${data.percentages.needs}% ${data.percentages.needs + data.percentages.wants}%, var(--sky) ${data.percentages.needs + data.percentages.wants}% 100%)` }}
+                    aria-label="Custom monthly budget split"
+                    style={{ background: `conic-gradient(${data.buckets.map((bucket, index) => `${bucket.color} ${data.buckets.slice(0, index).reduce((total, item) => total + item.percentage, 0)}% ${data.buckets.slice(0, index + 1).reduce((total, item) => total + item.percentage, 0)}%`).join(', ')})` }}
                   ><div><span>BASED ON</span><strong>BANK AMOUNT</strong></div></div>
                   <div className="split-legend">
-                    <span><i className="legend-dot needs-dot" />Needs <strong>{data.percentages.needs}%</strong></span>
-                    <span><i className="legend-dot wants-dot" />Wants <strong>{data.percentages.wants}%</strong></span>
-                    <span><i className="legend-dot savings-dot" />Savings <strong>{data.percentages.savings}%</strong></span>
+                    {data.buckets.map((bucket) => <span key={bucket.id}><i className="legend-dot" style={{ background: bucket.color }} />{bucket.name} <strong>{bucket.percentage}%</strong></span>)}
                   </div>
                 </div>
                 <div className="bucket-grid">
-                  {(['needs', 'wants', 'savings'] as Bucket[]).map((bucket) => (
+                  {data.buckets.map((bucket) => (
                     <BucketPanel
-                      key={bucket}
-                      bucket={bucket}
-                      allocation={stats.allocations[bucket]}
-                      used={stats.used[bucket]}
-                      percentage={data.savingsAmount !== null && bucket === 'savings' ? null : data.percentages[bucket]}
+                      key={bucket.id}
+                      allocation={stats.allocations[bucket.id]}
+                      used={stats.used[bucket.id] ?? 0}
+                      percentage={bucket.id === 'savings' && data.savingsAmount !== null ? null : bucket.percentage}
+                      color={bucket.color}
+                      name={bucket.name}
                     />
                   ))}
                 </div>
@@ -496,7 +499,7 @@ function App() {
             </section>
 
             <div className="lower-grid">
-              <ActivityPanel expenses={monthExpenses.slice(0, 5)} onViewAll={() => setView('activity')} onEdit={openExpense} onDelete={deleteExpense} />
+              <ActivityPanel expenses={monthExpenses.slice(0, 5)} buckets={data.buckets} onViewAll={() => setView('activity')} onEdit={openExpense} onDelete={deleteExpense} />
               <GoalsPanel goals={monthGoals.slice(0, 2)} onViewAll={() => setView('goals')} onAdd={() => openDialog('goal')} onContribute={(goalId) => openDialog('contribution', goalId)} />
             </div>
           </>
@@ -511,7 +514,7 @@ function App() {
             </div>
             <div className="activity-section">
               <div className="activity-section-heading"><h3>Spending</h3><span>{monthExpenses.length} recorded</span></div>
-              <ActivityList expenses={monthExpenses} onEdit={openExpense} onDelete={deleteExpense} />
+              <ActivityList expenses={monthExpenses} buckets={data.buckets} onEdit={openExpense} onDelete={deleteExpense} />
             </div>
           </section>
         )}
@@ -519,7 +522,7 @@ function App() {
         {view === 'subscriptions' && (
           <section className="page-section">
             <div className="section-heading"><div><p className="section-kicker">RECURRING AMOUNTS</p><h2>Monthly services</h2></div><span className="count-label">{formatCurrency(stats.subscriptions)} active per month</span></div>
-            <SubscriptionList subscriptions={data.subscriptions} onEdit={openSubscription} onDelete={deleteSubscription} />
+            <SubscriptionList subscriptions={data.subscriptions} buckets={data.buckets} onEdit={openSubscription} onDelete={deleteSubscription} />
           </section>
         )}
 
@@ -538,9 +541,9 @@ function App() {
               <h2>Choose your split</h2>
               <p>Percentages are applied to your bank income. Change them as your life changes.</p>
               <div className="settings-split-list">
-                {(['needs', 'wants', 'savings'] as Bucket[]).map((bucket) => <div key={bucket}><span>{bucketLabels[bucket]}</span><strong>{data.percentages[bucket]}%</strong></div>)}
+                {data.buckets.map((bucket) => <div key={bucket.id}><span>{bucket.name}</span><strong>{bucket.percentage}%</strong></div>)}
               </div>
-              <button className="button button-secondary" onClick={() => openDialog('split')}><Settings2 size={16} /> Edit percentages</button>
+              <button className="button button-secondary" onClick={() => openDialog('split')}><Settings2 size={16} /> Edit buckets</button>
             </div>
             <div className="settings-panel currency-settings">
               <div className="settings-icon blue-icon"><Banknote size={19} /></div>
@@ -601,7 +604,7 @@ function App() {
                 <FormField label="Amount"><div className="money-input"><span>HK$</span><input name="amount" type="number" min="0.01" step="0.01" placeholder="0.00" defaultValue={editingExpense?.amount} required /></div></FormField>
                 <div className="form-row">
                   <FormField label="Category"><input name="category" list="category-options" placeholder="Choose or type" defaultValue={editingExpense?.category} required /><datalist id="category-options"><option>Housing</option><option>Groceries</option><option>Transport</option><option>Dining</option><option>Shopping</option><option>Health</option><option>Utilities</option><option>Other</option></datalist></FormField>
-                  <FormField label="Bucket"><select name="bucket" defaultValue={editingExpense?.bucket ?? 'needs'}>{(['needs', 'wants'] as Bucket[]).map((bucket) => <option key={bucket} value={bucket}>{bucketLabels[bucket]}</option>)}</select></FormField>
+                  <FormField label="Bucket"><select name="bucket" defaultValue={editingExpense?.bucket ?? data.buckets[0]?.id}>{data.buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></FormField>
                 </div>
               </>}
               {dialog === 'subscription' && <>
@@ -609,7 +612,7 @@ function App() {
                 <FormField label="Monthly amount"><div className="money-input"><span>HK$</span><input name="amount" type="number" min="0.01" step="0.01" placeholder="0.00" defaultValue={editingSubscription?.amount} required /></div></FormField>
                 <div className="form-row">
                   <FormField label="Category"><input name="category" list="subscription-category-options" placeholder="Choose or type" defaultValue={editingSubscription?.category ?? 'Subscriptions'} required /><datalist id="subscription-category-options"><option>Subscriptions</option><option>Entertainment</option><option>Productivity</option><option>Utilities</option><option>Other</option></datalist></FormField>
-                  <FormField label="Bucket"><select name="bucket" defaultValue={editingSubscription?.bucket ?? 'needs'}>{(['needs', 'wants', 'savings'] as Bucket[]).map((bucket) => <option key={bucket} value={bucket}>{bucketLabels[bucket]}</option>)}</select></FormField>
+                  <FormField label="Bucket"><select name="bucket" defaultValue={editingSubscription?.bucket ?? data.buckets[0]?.id}>{data.buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></FormField>
                 </div>
                 <label className="check-field"><input name="active" type="checkbox" defaultChecked={editingSubscription?.active ?? true} /><span><strong>Active monthly subscription</strong><small>Turn off to keep it in your list without counting it in spending.</small></span></label>
               </>}
@@ -624,10 +627,16 @@ function App() {
                 <p className="dialog-note">Your goal total and monthly savings will update when you save.</p>
               </>}
               {dialog === 'split' && <>
-                <div className="split-inputs">{(['needs', 'wants', 'savings'] as Bucket[]).map((bucket) => <FormField key={bucket} label={bucketLabels[bucket]}><div className="percent-input"><input name={bucket} type="number" min="0" max="100" step="1" defaultValue={data.percentages[bucket]} required /><span>%</span></div></FormField>)}</div>
+                <div className="split-inputs">
+                  {draftBuckets.map((bucket) => <FormField key={bucket.id} label={bucket.name}><div className="percent-input"><input name={bucket.id} type="number" min="0" max="100" step="1" value={bucket.percentage} onChange={(event) => updateDraftBucket(bucket.id, { percentage: Number(event.target.value) })} required /><span>%</span></div></FormField>)}
+                </div>
+                <div className="custom-bucket-editor">
+                  {draftBuckets.map((bucket) => <div className="custom-bucket-row" key={bucket.id}><input aria-label="Bucket name" value={bucket.name} onChange={(event) => updateDraftBucket(bucket.id, { name: event.target.value })} maxLength={32} /><input aria-label="Bucket color" type="color" value={bucket.color} onChange={(event) => updateDraftBucket(bucket.id, { color: event.target.value })} /><button type="button" className="row-delete" aria-label={`Remove ${bucket.name}`} onClick={() => removeDraftBucket(bucket.id)}><Trash2 size={15} /></button></div>)}
+                  <button type="button" className="button button-secondary" onClick={addDraftBucket}><Plus size={15} /> Add custom bucket</button>
+                </div>
                 <label className="check-field"><input name="fixedSavings" type="checkbox" checked={fixedSavings} onChange={(event) => setFixedSavings(event.target.checked)} /><span><strong>Use a fixed monthly savings amount</strong><small>Choose a specific amount instead of the savings percentage.</small></span></label>
                 {fixedSavings && <FormField label="Monthly savings amount"><div className="money-input"><span>HK$</span><input name="savingsAmount" type="number" min="0" step="0.01" defaultValue={data.savingsAmount ?? 0} required /></div></FormField>}
-                <div className={`split-total ${splitError ? 'error' : ''}`}><span>{splitError || 'Your percentages must total 100%; the fixed amount overrides savings.'}</span><strong>{totalAllocated}%</strong></div>
+                <div className={`split-total ${splitError ? 'error' : ''}`}><span>{splitError || 'Your percentages must total 100%; the fixed amount overrides savings.'}</span><strong>{draftAllocated}%</strong></div>
               </>}
               <div className="dialog-actions"><button className="button button-secondary" type="button" onClick={closeDialog}>Cancel</button><button className="button button-primary" type="submit"><Check size={16} /> {dialog === 'split' ? 'Save split' : editingExpense ? 'Save changes' : 'Save entry'}</button></div>
             </form>
@@ -642,23 +651,23 @@ function Metric({ label, value, note, icon, tone }: { label: string; value: stri
   return <div className="metric"><div className={`metric-icon ${tone}`}>{icon}</div><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-note">{note}</span></div>
 }
 
-function BucketPanel({ bucket, allocation, used, percentage }: { bucket: Bucket; allocation: number; used: number; percentage: number | null }) {
+function BucketPanel({ allocation, used, percentage, color, name }: { allocation: number; used: number; percentage: number | null; color: string; name: string }) {
   const progress = allocation > 0 ? Math.min(used / allocation * 100, 100) : used > 0 ? 100 : 0
   const over = used > allocation
   const amountLabel = percentage === null ? formatCurrency(allocation) : `${percentage}%`
   return (
-    <div className={`bucket-panel ${bucket}`}>
-      <div className="bucket-top"><span className={`bucket-symbol ${bucket}`}>{bucket === 'needs' ? <Home size={17} /> : bucket === 'wants' ? <Utensils size={17} /> : <GoalIcon size={17} />}</span><span className="bucket-percent">{amountLabel}</span></div>
-      <h3>{bucketLabels[bucket]}</h3>
+    <div className="bucket-panel" style={{ borderTopColor: color }}>
+      <div className="bucket-top"><span className="bucket-symbol" style={{ color, background: `${color}22` }}><GoalIcon size={17} /></span><span className="bucket-percent">{amountLabel}</span></div>
+      <h3>{name}</h3>
       <div className="bucket-amount"><strong>{formatCurrency(used)}</strong><span>of {formatCurrency(allocation)}</span></div>
-      <div className="progress-track" role="progressbar" aria-label={`${bucketLabels[bucket]} budget used`} aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}><span className={over ? 'over' : ''} style={{ width: `${progress}%` }} /></div>
+      <div className="progress-track" role="progressbar" aria-label={`${name} budget used`} aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}><span className={over ? 'over' : ''} style={{ width: `${progress}%`, background: color }} /></div>
       <p className={`bucket-status ${over ? 'over-text' : ''}`}>{over ? `${formatCurrency(used - allocation)} over plan` : `${formatCurrency(allocation - used)} left`}</p>
     </div>
   )
 }
 
-function ActivityPanel({ expenses, onViewAll, onEdit, onDelete }: { expenses: Expense[]; onViewAll: () => void; onEdit: (expense: Expense) => void; onDelete: (id: string) => void }) {
-  return <section className="list-panel"><div className="section-heading compact-heading"><div><p className="section-kicker">RECENT ENTRIES</p><h2>Where it went</h2></div><button className="text-button" onClick={onViewAll}>View all <ArrowRight size={15} /></button></div><ActivityList expenses={expenses} onEdit={onEdit} onDelete={onDelete} /></section>
+function ActivityPanel({ expenses, buckets, onViewAll, onEdit, onDelete }: { expenses: Expense[]; buckets: BucketDefinition[]; onViewAll: () => void; onEdit: (expense: Expense) => void; onDelete: (id: string) => void }) {
+  return <section className="list-panel"><div className="section-heading compact-heading"><div><p className="section-kicker">RECENT ENTRIES</p><h2>Where it went</h2></div><button className="text-button" onClick={onViewAll}>View all <ArrowRight size={15} /></button></div><ActivityList expenses={expenses} buckets={buckets} onEdit={onEdit} onDelete={onDelete} /></section>
 }
 
 function IncomeList({ paychecks, onDelete }: { paychecks: Paycheck[]; onDelete: (id: string) => void }) {
@@ -676,31 +685,35 @@ function IncomeList({ paychecks, onDelete }: { paychecks: Paycheck[]; onDelete: 
   ))}</div>
 }
 
-function ActivityList({ expenses, onEdit, onDelete }: { expenses: Expense[]; onEdit: (expense: Expense) => void; onDelete: (id: string) => void }) {
+function ActivityList({ expenses, buckets, onEdit, onDelete }: { expenses: Expense[]; buckets: BucketDefinition[]; onEdit: (expense: Expense) => void; onDelete: (id: string) => void }) {
+  const bucketById = (bucketId: Bucket) => buckets.find((bucket) => bucket.id === bucketId) ?? { id: bucketId, name: bucketId, percentage: 0, color: '#65ad88' }
   if (expenses.length === 0) return <div className="empty-state"><span><CreditCard size={20} /></span><strong>No expenses for this month yet</strong><p>Add your first expense to see it here.</p></div>
-  return <div className="activity-list">{expenses.map((expense) => (
-    <div className="activity-row" key={expense.id}>
+  return <div className="activity-list">{expenses.map((expense) => {
+    const bucket = bucketById(expense.bucket)
+    return <div className="activity-row" key={expense.id}>
       <button className="activity-main" onClick={() => onEdit(expense)} aria-label={`Edit ${expense.description}`}>
-        <span className={`activity-icon ${expense.bucket}`}>{expense.bucket === 'needs' ? <Home size={17} /> : <ShoppingBag size={17} />}</span>
+        <span className="activity-icon" style={{ color: bucket.color, background: `${bucket.color}22` }}><ShoppingBag size={17} /></span>
         <span className="activity-copy"><strong>{expense.description}</strong><small>{expense.category} <i /> {formatShortDate(expense.date)}</small></span>
       </button>
-      <span className="activity-bucket">{bucketLabels[expense.bucket]}</span>
+      <span className="activity-bucket">{bucket.name}</span>
       <strong className="activity-amount">−{formatCurrency(expense.amount)}</strong>
       <button className="row-delete" aria-label={`Delete ${expense.description}`} title="Delete expense" onClick={() => onDelete(expense.id)}><Trash2 size={15} /></button>
     </div>
-  ))}</div>
+  })}</div>
 }
 
-function SubscriptionList({ subscriptions, onEdit, onDelete }: { subscriptions: Subscription[]; onEdit: (subscription: Subscription) => void; onDelete: (id: string) => void }) {
+function SubscriptionList({ subscriptions, buckets, onEdit, onDelete }: { subscriptions: Subscription[]; buckets: BucketDefinition[]; onEdit: (subscription: Subscription) => void; onDelete: (id: string) => void }) {
+  const bucketById = (bucketId: Bucket) => buckets.find((bucket) => bucket.id === bucketId) ?? { id: bucketId, name: bucketId, percentage: 0, color: '#65ad88' }
   if (subscriptions.length === 0) return <div className="empty-state"><span><Repeat2 size={20} /></span><strong>No active subscriptions yet</strong><p>Add a recurring service to keep monthly costs visible.</p></div>
-  return <div className="subscription-list">{subscriptions.map((subscription) => (
-    <article className="subscription-row" key={subscription.id}>
+  return <div className="subscription-list">{subscriptions.map((subscription) => {
+    const bucket = bucketById(subscription.bucket)
+    return <article className="subscription-row" key={subscription.id}>
       <span className="subscription-icon"><Repeat2 size={18} /></span>
-      <div className="subscription-copy"><strong>{subscription.name}</strong><span>{subscription.category} · {subscription.bucket && bucketLabels[subscription.bucket]}</span></div>
+      <div className="subscription-copy"><strong>{subscription.name}</strong><span>{subscription.category} · {bucket.name}</span></div>
       <strong className="subscription-amount">{formatCurrency(subscription.amount)}<small>/month</small></strong>
       <div className="subscription-actions"><button className="text-button" onClick={() => onEdit(subscription)}>Edit</button><button className="row-delete" aria-label={`Delete ${subscription.name}`} title="Delete subscription" onClick={() => onDelete(subscription.id)}><Trash2 size={15} /></button></div>
     </article>
-  ))}</div>
+  })}</div>
 }
 
 function GoalsPanel({ goals, onViewAll, onAdd, onContribute }: { goals: (Goal & { monthContribution: number })[]; onViewAll: () => void; onAdd: () => void; onContribute: (goalId: string) => void }) {

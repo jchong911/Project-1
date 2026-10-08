@@ -1,4 +1,11 @@
-export type Bucket = 'needs' | 'wants' | 'savings'
+export type Bucket = string
+
+export interface BucketDefinition {
+  id: string
+  name: string
+  percentage: number
+  color: string
+}
 
 export interface Paycheck {
   id: string
@@ -45,6 +52,7 @@ export interface BudgetData {
   subscriptions: Subscription[]
   expenses: Expense[]
   goals: Goal[]
+  buckets: BucketDefinition[]
   percentages: Record<Bucket, number>
   savingsAmount: number | null
 }
@@ -59,11 +67,18 @@ export interface MonthlyStats {
   remaining: number
 }
 
+export const defaultBuckets: BucketDefinition[] = [
+  { id: 'needs', name: 'Needs', percentage: 50, color: '#65ad88' },
+  { id: 'wants', name: 'Wants', percentage: 30, color: '#d5ac40' },
+  { id: 'savings', name: 'Savings', percentage: 20, color: '#7191c4' },
+]
+
 export const createEmptyData = (): BudgetData => ({
   paychecks: [],
   subscriptions: [],
   expenses: [],
   goals: [],
+  buckets: defaultBuckets.map((bucket) => ({ ...bucket })),
   percentages: { needs: 50, wants: 30, savings: 20 },
   savingsAmount: null,
 })
@@ -88,6 +103,9 @@ export const readLegacyBudgetData = (): BudgetData | null => {
       savingsAmount: typeof parsed.savingsAmount === 'number' && parsed.savingsAmount >= 0
         ? parsed.savingsAmount
         : null,
+      buckets: Array.isArray(parsed.buckets) && parsed.buckets.length > 0
+        ? parsed.buckets
+        : defaultBuckets.map((bucket) => ({ ...bucket })),
       percentages: { ...empty.percentages, ...parsed.percentages },
     }
     const hasRecords = legacy.paychecks.length > 0 || legacy.expenses.length > 0 || legacy.goals.length > 0
@@ -154,25 +172,28 @@ export const calculateMonthlyStats = (data: BudgetData, monthKey: string): Month
       .reduce((goalTotal, contribution) => goalTotal + contribution.amount, 0)
   }, 0)
 
-  const used: Record<Bucket, number> = {
-    needs: expenses
-      .filter((expense) => expense.bucket === 'needs')
-      .reduce((total, expense) => total + expense.amount, 0)
-      + activeSubscriptions
-        .filter((subscription) => subscription.bucket === 'needs')
-        .reduce((total, subscription) => total + subscription.amount, 0),
-    wants: expenses
-      .filter((expense) => expense.bucket === 'wants')
-      .reduce((total, expense) => total + expense.amount, 0)
-      + activeSubscriptions
-        .filter((subscription) => subscription.bucket === 'wants')
-        .reduce((total, subscription) => total + subscription.amount, 0),
-    savings: savingsContributions,
-  }
-  const allocations: Record<Bucket, number> = {
-    needs: income * data.percentages.needs / 100,
-    wants: income * data.percentages.wants / 100,
-    savings: data.savingsAmount ?? income * data.percentages.savings / 100,
+  const buckets = data.buckets.length > 0 ? data.buckets : defaultBuckets
+  const used: Record<Bucket, number> = Object.fromEntries(
+    buckets.map((bucket) => [
+      bucket.id,
+      expenses
+        .filter((expense) => expense.bucket === bucket.id)
+        .reduce((total, expense) => total + expense.amount, 0)
+        + activeSubscriptions
+          .filter((subscription) => subscription.bucket === bucket.id)
+          .reduce((total, subscription) => total + subscription.amount, 0),
+    ]),
+  )
+  const allocations: Record<Bucket, number> = Object.fromEntries(
+    buckets.map((bucket) => [
+      bucket.id,
+      bucket.id === 'savings' && data.savingsAmount !== null
+        ? data.savingsAmount
+        : income * bucket.percentage / 100,
+    ]),
+  )
+  if (buckets.some((bucket) => bucket.id === 'savings') && data.savingsAmount === null) {
+    used.savings += savingsContributions
   }
   const purchases = expenses.reduce((total, expense) => total + expense.amount, 0)
     + activeSubscriptions.reduce((total, subscription) => total + subscription.amount, 0)
